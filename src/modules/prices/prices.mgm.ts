@@ -10,12 +10,4 @@ export const ContractBlacklist: Address[] = [
 	'0x372B2dC06478AA2c8182EeE0f12eA0e9A15E2913',
 ].map((i) => normalizeAddress(i));
 
-export const ContractWhitelist: ERC20Info[] = [
-	{
-		chainId: ChainMain.mainnet.id,
-		address: '0x79d4f0232A66c4c91b89c76362016A1707CFBF4f',
-		name: 'VNX Franc',
-		symbol: 'VCHF',
-		decimals: 18,
-	},
-];
+export const ContractWhitelist: ERC20Info[] = [];
