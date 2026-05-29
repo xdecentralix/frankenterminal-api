@@ -36,7 +36,9 @@ import { PositionDeniedMessage } from './messages/PositionDenied.message';
 export class TelegramService {
 	private readonly startUpTime = Date.now();
 	private readonly logger = new Logger(this.constructor.name);
-	private readonly bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+	private readonly bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN ?? '', {
+		polling: Boolean(process.env.TELEGRAM_BOT_TOKEN),
+	});
 	private telegramHandles: string[] = ['/MintingUpdates', '/PriceAlerts', '/DailyInfos', '/help'];
 	private telegramState: TelegramState;
 	private telegramGroupState: TelegramGroupState;
