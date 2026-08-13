@@ -1,0 +1,23 @@
+// Telegram group subscriptions and state
+model TelegramGroup {
+  chatId        String   @id
+  subscriptions Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("telegram_groups")
+}
+
+// Personalized alerts per Telegram identity (user DM or group chat)
+// type: 'governance' | 'allPositions' | 'owner'
+// address: '' for governance/allPositions, owner address for owner type
+model TelegramUserAlert {
+  id         String   @id @default(uuid())
+  telegramId String
+  type       String
+  address    String
+  createdAt  DateTime @default(now())
+
+  @@unique([telegramId, type, address])
+  @@map("telegram_user_alerts")
+}

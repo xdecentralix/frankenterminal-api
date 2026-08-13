@@ -47,22 +47,10 @@ type AnalyticsTransactionLog = {
     txHash: string;
     totalInflow: bigint;
     totalOutflow: bigint;
-    totalTradeFee: bigint;
-    totalSupply: bigint;
     totalEquity: bigint;
     totalSavings: bigint;
     fpsTotalSupply: bigint;
     fpsPrice: bigint;
-    totalMintedV1: bigint;
-    totalMintedV2: bigint;
-    currentMintLeadRate: bigint;
-    currentSaveLeadRate: bigint;
-    projectedInterests: bigint;
-    annualV1Interests: bigint;
-    annualV2Interests: bigint;
-    annualV1BorrowRate: bigint;
-    annualV2BorrowRate: bigint;
-    annualNetEarnings: bigint;
     realizedNetEarnings: bigint;
     earningsPerFPS: bigint;
 };
@@ -72,22 +60,10 @@ type AnalyticsDailyLog = {
     txHash: string;
     totalInflow: bigint;
     totalOutflow: bigint;
-    totalTradeFee: bigint;
-    totalSupply: bigint;
     totalEquity: bigint;
     totalSavings: bigint;
     fpsTotalSupply: bigint;
     fpsPrice: bigint;
-    totalMintedV1: bigint;
-    totalMintedV2: bigint;
-    currentMintLeadRate: bigint;
-    currentSaveLeadRate: bigint;
-    projectedInterests: bigint;
-    annualV1Interests: bigint;
-    annualV2Interests: bigint;
-    annualV1BorrowRate: bigint;
-    annualV2BorrowRate: bigint;
-    annualNetEarnings: bigint;
     realizedNetEarnings: bigint;
     earningsPerFPS: bigint;
 };
@@ -886,6 +862,7 @@ type ApiSavingsReferrerEarnings = {
     total: number;
 };
 
+type AlertType = 'governance' | 'allPositions' | 'owner';
 type TelegramState = {
     minterApplied: number;
     minterVetoed: number;
@@ -894,8 +871,9 @@ type TelegramState = {
     positions: number;
     positionsDenied: number;
     positionsExpiringSoon1: number;
+    positionsExpiringSoon7: number;
     positionsExpired: number;
-    positionsPriceAlert: Map<Address, PositionPriceAlertState>;
+    positionsPriceAlert: Map<string, PositionPriceAlertState>;
     mintingUpdates: number;
     challenges: number;
     bids: number;
@@ -907,23 +885,10 @@ type TelegramState = {
     ccipRateLimit: number;
 };
 type PositionPriceAlertState = {
-    warningPrice: number;
-    warningTimestamp: number;
-    alertPrice: number;
     alertTimestamp: number;
-    lowestPrice: number;
+    warningTimestamp: number;
     lowestTimestamp: number;
-};
-type TelegramGroupState = {
-    apiVersion: string;
-    createdAt: number;
-    updatedAt: number;
-    groups: string[];
-    subscription: {
-        [chatId: string]: {
-            [handle: string]: boolean;
-        };
-    };
+    lowestPrice: number;
 };
 
 type TransferReferenceQuery = {
@@ -949,4 +914,4 @@ type ApiTransferReferenceQuery = TransferReferenceQuery[] | {
     error: string;
 };
 
-export { type AnalyticsDailyLog, type AnalyticsExposureItem, type AnalyticsProfitLossLog, type AnalyticsTransactionLog, type ApiAnalyticsCollateralExposure, type ApiAnalyticsFpsEarnings, type ApiAnalyticsProfitLossLog, type ApiBidsBidders, type ApiBidsChallenges, type ApiBidsListing, type ApiBidsMapping, type ApiBidsPositions, type ApiChallengesChallengers, type ApiChallengesListing, type ApiChallengesMapping, type ApiChallengesPositions, type ApiChallengesPrices, type ApiDailyLog, type ApiEcosystemCollateralList, type ApiEcosystemCollateralListArray, type ApiEcosystemCollateralPositions, type ApiEcosystemCollateralPositionsDetails, type ApiEcosystemCollateralStats, type ApiEcosystemCollateralStatsItem, type ApiEcosystemFpsInfo, type ApiEcosystemFrankencoinInfo, type ApiEcosystemFrankencoinKeyValues, type ApiEcosystemFrankencoinSupply, type ApiLeadrateInfo, type ApiLeadrateProposed, type ApiLeadrateRate, type ApiMinterListing, type ApiMinterMapping, type ApiMintingUpdateListing, type ApiMintingUpdateMapping, type ApiOwnerDebt, type ApiOwnerFees, type ApiOwnerHistory, type ApiOwnerTransfersListing, type ApiOwnerValueLocked, type ApiPositionsListing, type ApiPositionsMapping, type ApiPositionsOwners, type ApiPriceERC20, type ApiPriceERC20Mapping, type ApiPriceListing, type ApiPriceMapping, type ApiPriceMarketChart, type ApiSavingsActivity, type ApiSavingsBalance, type ApiSavingsInfo, type ApiSavingsRanked, type ApiSavingsReferrerEarnings, type ApiSavingsReferrerMapping, type ApiTransactionLog, type ApiTransferReferenceList, type ApiTransferReferenceQuery, type BidsBidderMapping, type BidsChallengesMapping, type BidsId, type BidsPositionsMapping, type BidsQueryItem, type BidsQueryItemMapping, BidsQueryType, type BidsType, type ChallengesChallengersMapping, type ChallengesId, type ChallengesPositionsMapping, type ChallengesPricesMapping, type ChallengesQueryItem, type ChallengesQueryItemMapping, ChallengesQueryStatus, type ChallengesStatus, type ERC20Info, type ERC20InfoObjectArray, type EcosystemCollateralPositionsDetailsItem, type EcosystemCollateralPositionsItem, type EcosystemERC20StatusQuery, type EcosystemERC20TotalSupply, type EcosystemFrankencoin, type EcosystemFrankencoinKeyValues, type EcosystemFrankencoinMapping, type EcosystemFrankencoinSupplyListing, type EcosystemQuery, type FrankencoinSupplyQuery, type FrankencoinSupplyQueryObject, type LeadrateProposedMapping, type LeadrateProposedOpen, type LeadrateProposedQuery, type LeadrateRateMapping, type LeadrateRateQuery, type MinterQuery, type MinterQueryObjectArray, type MintingUpdateQuery, type MintingUpdateQueryId, type MintingUpdateQueryObjectArray, type MintingUpdateQueryV1, type MintingUpdateQueryV2, type OwnerTransferQuery, type OwnersPositionsObjectArray, type PositionPriceAlertState, type PositionQuery, type PositionQueryV1, type PositionQueryV2, type PositionsQueryObjectArray, type PriceHistoryQuery, type PriceHistoryQueryObjectArray, type PriceHistoryRatio, type PriceMarketChartObject, type PriceQuery, type PriceQueryCurrencies, type PriceQueryObjectArray, type PriceSource, type SavingsActivityQuery, type SavingsBalance, type SavingsBalanceAccountMapping, type SavingsBalanceChainIdMapping, type SavingsBalanceQuery, type SavingsReferrerAccountItem, type SavingsReferrerEarnings, type SavingsReferrerEarningsQuery, type SavingsReferrerMapping, type SavingsReferrerMappingQuery, type SavingsStatus, type SavingsStatusMapping, type SavingsStatusQuery, type TelegramGroupState, type TelegramState, type TransferReferenceObjectArray, type TransferReferenceQuery };
+export { type AlertType, type AnalyticsDailyLog, type AnalyticsExposureItem, type AnalyticsProfitLossLog, type AnalyticsTransactionLog, type ApiAnalyticsCollateralExposure, type ApiAnalyticsFpsEarnings, type ApiAnalyticsProfitLossLog, type ApiBidsBidders, type ApiBidsChallenges, type ApiBidsListing, type ApiBidsMapping, type ApiBidsPositions, type ApiChallengesChallengers, type ApiChallengesListing, type ApiChallengesMapping, type ApiChallengesPositions, type ApiChallengesPrices, type ApiDailyLog, type ApiEcosystemCollateralList, type ApiEcosystemCollateralListArray, type ApiEcosystemCollateralPositions, type ApiEcosystemCollateralPositionsDetails, type ApiEcosystemCollateralStats, type ApiEcosystemCollateralStatsItem, type ApiEcosystemFpsInfo, type ApiEcosystemFrankencoinInfo, type ApiEcosystemFrankencoinKeyValues, type ApiEcosystemFrankencoinSupply, type ApiLeadrateInfo, type ApiLeadrateProposed, type ApiLeadrateRate, type ApiMinterListing, type ApiMinterMapping, type ApiMintingUpdateListing, type ApiMintingUpdateMapping, type ApiOwnerDebt, type ApiOwnerFees, type ApiOwnerHistory, type ApiOwnerTransfersListing, type ApiOwnerValueLocked, type ApiPositionsListing, type ApiPositionsMapping, type ApiPositionsOwners, type ApiPriceERC20, type ApiPriceERC20Mapping, type ApiPriceListing, type ApiPriceMapping, type ApiPriceMarketChart, type ApiSavingsActivity, type ApiSavingsBalance, type ApiSavingsInfo, type ApiSavingsRanked, type ApiSavingsReferrerEarnings, type ApiSavingsReferrerMapping, type ApiTransactionLog, type ApiTransferReferenceList, type ApiTransferReferenceQuery, type BidsBidderMapping, type BidsChallengesMapping, type BidsId, type BidsPositionsMapping, type BidsQueryItem, type BidsQueryItemMapping, BidsQueryType, type BidsType, type ChallengesChallengersMapping, type ChallengesId, type ChallengesPositionsMapping, type ChallengesPricesMapping, type ChallengesQueryItem, type ChallengesQueryItemMapping, ChallengesQueryStatus, type ChallengesStatus, type ERC20Info, type ERC20InfoObjectArray, type EcosystemCollateralPositionsDetailsItem, type EcosystemCollateralPositionsItem, type EcosystemERC20StatusQuery, type EcosystemERC20TotalSupply, type EcosystemFrankencoin, type EcosystemFrankencoinKeyValues, type EcosystemFrankencoinMapping, type EcosystemFrankencoinSupplyListing, type EcosystemQuery, type FrankencoinSupplyQuery, type FrankencoinSupplyQueryObject, type LeadrateProposedMapping, type LeadrateProposedOpen, type LeadrateProposedQuery, type LeadrateRateMapping, type LeadrateRateQuery, type MinterQuery, type MinterQueryObjectArray, type MintingUpdateQuery, type MintingUpdateQueryId, type MintingUpdateQueryObjectArray, type MintingUpdateQueryV1, type MintingUpdateQueryV2, type OwnerTransferQuery, type OwnersPositionsObjectArray, type PositionPriceAlertState, type PositionQuery, type PositionQueryV1, type PositionQueryV2, type PositionsQueryObjectArray, type PriceHistoryQuery, type PriceHistoryQueryObjectArray, type PriceHistoryRatio, type PriceMarketChartObject, type PriceQuery, type PriceQueryCurrencies, type PriceQueryObjectArray, type PriceSource, type SavingsActivityQuery, type SavingsBalance, type SavingsBalanceAccountMapping, type SavingsBalanceChainIdMapping, type SavingsBalanceQuery, type SavingsReferrerAccountItem, type SavingsReferrerEarnings, type SavingsReferrerEarningsQuery, type SavingsReferrerMapping, type SavingsReferrerMappingQuery, type SavingsStatus, type SavingsStatusMapping, type SavingsStatusQuery, type TelegramState, type TransferReferenceObjectArray, type TransferReferenceQuery };

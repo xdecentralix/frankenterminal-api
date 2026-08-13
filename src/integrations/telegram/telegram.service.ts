@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import TelegramBot from 'node-telegram-bot-api';
 import { PositionsService } from 'modules/positions/positions.service';
-import { TelegramGroupState, TelegramState } from './telegram.types';
+import { TelegramState } from './telegram.types';
 import { EcosystemMinterService } from 'modules/ecosystem/ecosystem.minter.service';
 import { MinterProposalMessage } from './messages/MinterProposal.message';
 import { PositionProposalMessage } from './messages/PositionProposal.message';
@@ -12,7 +12,6 @@ import { ChallengeStartedMessage } from './messages/ChallengeStarted.message';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PricesService } from 'modules/prices/prices.service';
 import { MintingUpdateMessage } from './messages/MintingUpdate.message';
-import { HelpMessage } from './messages/Help.message';
 import { MinterProposalVetoedMessage } from './messages/MinterProposalVetoed.message';
 import { SavingsLeadrateService } from 'modules/savings/savings.leadrate.service';
 import { LeadrateProposalMessage } from './messages/LeadrateProposal.message';
@@ -36,6 +35,9 @@ import { CCIPProposalMessage } from './messages/CCIPProposal.message';
 import { CCIPProposalDeniedMessage } from './messages/CCIPProposalDenied.message';
 import { CCIPProposalEnactedMessage } from './messages/CCIPProposalEnacted.message';
 import { CCIPRateLimitMessage } from './messages/CCIPRateLimit.message';
+import { StatusMessage } from './messages/Status.message';
+
+const ADDRESS_REGEX = /^0x[0-9a-fA-F]{40}$/;
 
 @Injectable()
 export class TelegramService {
@@ -44,9 +46,7 @@ export class TelegramService {
 	private readonly bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN ?? '', {
 		polling: Boolean(process.env.TELEGRAM_BOT_TOKEN),
 	});
-	private telegramHandles: string[] = ['/MintingUpdates', '/PriceAlerts', '/WeeklyInfos', '/help'];
 	private telegramState: TelegramState;
-	private telegramGroupState: TelegramGroupState;
 
 	constructor(
 		private readonly prisma: PrismaService,
@@ -67,6 +67,7 @@ export class TelegramService {
 			positions: this.startUpTime,
 			positionsDenied: this.startUpTime,
 			positionsExpiringSoon1: this.startUpTime,
+			positionsExpiringSoon7: this.startUpTime,
 			positionsExpired: this.startUpTime,
 			positionsPriceAlert: new Map(),
 			mintingUpdates: this.startUpTime,
@@ -80,76 +81,16 @@ export class TelegramService {
 			ccipRateLimit: this.startUpTime,
 		};
 
-		this.telegramGroupState = {
-			apiVersion: process.env.npm_package_version,
-			createdAt: this.startUpTime,
-			updatedAt: this.startUpTime,
-			groups: [],
-			subscription: {},
-		};
-
-		this.readBackupGroups();
+		this.applyListener();
 	}
 
-	async readBackupGroups() {
-		this.logger.log('Reading backup groups from database');
-
-		const groups = await this.prisma.safeExecute(() => this.prisma.telegramGroup.findMany());
-
-		if (groups && groups.length > 0) {
-			this.telegramGroupState.groups = groups.map((g) => g.chatId);
-			this.telegramGroupState.subscription = Object.fromEntries(groups.map((g) => [g.chatId, g.subscriptions as any]));
-			this.logger.log(`Telegram group state restored (${groups.length} groups)`);
-		} else {
-			this.logger.log('No telegram groups found, starting fresh');
-		}
-
-		await this.applyListener();
-	}
-
-	async writeBackupGroups(groups: string[] = this.telegramGroupState.groups) {
-		this.telegramGroupState.apiVersion = process.env.npm_package_version;
-		this.telegramGroupState.updatedAt = Date.now();
-
-		await this.prisma.safeExecute(async () => {
-			// Update or create groups
-			for (const chatId of groups) {
-				const subscriptions = this.telegramGroupState.subscription[chatId] || {};
-				await this.prisma.telegramGroup.upsert({
-					where: { chatId },
-					create: {
-						chatId,
-						subscriptions,
-					},
-					update: {
-						subscriptions,
-					},
-				});
-			}
-
-			this.logger.log('Telegram group backup stored in database');
-		});
-	}
-
-	async removeBackupGroups(groups: string[]) {
-		await this.prisma.safeExecute(async () => {
-			// Update or create groups
-			for (const chatId of groups) {
-				await this.prisma.telegramGroup.delete({
-					where: {
-						chatId,
-					},
-				});
-			}
-
-			this.logger.log('Telegram group backup stored in database');
-		});
-	}
+	// ─── Sending ─────────────────────────────────────────────────────────────────
 
 	async sendMessageAll(message: string) {
-		if (this.telegramGroupState.groups.length == 0) return;
-		for (const group of this.telegramGroupState.groups) {
-			await this.sendMessage(group, message);
+		const groups = await this.prisma.safeExecute(() => this.prisma.telegramGroup.findMany());
+		if (!groups?.length) return;
+		for (const group of groups) {
+			await this.sendMessage(group.chatId, message);
 		}
 	}
 
@@ -174,7 +115,6 @@ export class TelegramService {
 
 			if (typeof error === 'object') {
 				if (error?.message.includes(msg.parseEntities)) {
-					// Markdown parsing failed — retry as plain text so the alert is never lost
 					this.logger.warn(`Markdown parse error for group ${group}, retrying as plain text`);
 					try {
 						await this.bot.sendMessage(group.toString(), message, { disable_web_page_preview: true });
@@ -199,242 +139,211 @@ export class TelegramService {
 		}
 	}
 
+	// ─── Group management ─────────────────────────────────────────────────────
+
+	async upsertTelegramGroup(id: number | string): Promise<boolean> {
+		if (!id) return false;
+		const chatId = id.toString();
+
+		const existing = await this.prisma.safeExecute(() => this.prisma.telegramGroup.findUnique({ where: { chatId } }));
+		if (existing) return false;
+
+		try {
+			await this.prisma.telegramGroup.create({ data: { chatId } });
+		} catch (e: any) {
+			return false;
+		}
+
+		this.logger.log(`Registered Telegram Group: ${id}`);
+		await this.sendMessage(id, WelcomeGroupMessage(id));
+
+		await this.addAlert(id, 'governance', '');
+		await this.addAlert(id, 'allPositions', '');
+		await this.sendMessage(chatId, '✅ Subscribed to *Governance* and *All Positions* alerts.');
+		return true;
+	}
+
+	async removeTelegramGroup(id: number | string): Promise<boolean> {
+		if (!id) return false;
+		const chatId = id.toString();
+		const result = await this.prisma.safeExecute(() => this.prisma.telegramGroup.deleteMany({ where: { chatId } }));
+		const removed = (result?.count ?? 0) > 0;
+		if (removed) {
+			this.logger.log(`Removed Telegram Group: ${id}`);
+			await this.prisma.safeExecute(() => this.prisma.telegramUserAlert.deleteMany({ where: { telegramId: chatId } }));
+		}
+		return removed;
+	}
+
+	// ─── Alert management ─────────────────────────────────────────────────────
+
+	private async addAlert(telegramId: string | number, type: string, address: string): Promise<void> {
+		telegramId = telegramId.toString();
+		await this.prisma.safeExecute(() =>
+			this.prisma.telegramUserAlert.upsert({
+				where: { telegramId_type_address: { telegramId, type, address } },
+				create: { telegramId, type, address },
+				update: {},
+			})
+		);
+	}
+
+	private async removeAlert(telegramId: string, type: string, address: string): Promise<void> {
+		await this.prisma.safeExecute(() => this.prisma.telegramUserAlert.deleteMany({ where: { telegramId, type, address } }));
+	}
+
+	// ─── Recipient resolution ─────────────────────────────────────────────────
+
+	private async getGovernanceRecipients(): Promise<string[]> {
+		const alerts = await this.prisma.safeExecute(() =>
+			this.prisma.telegramUserAlert.findMany({ where: { type: 'governance', address: '' } })
+		);
+		return alerts?.map((a) => a.telegramId) ?? [];
+	}
+
+	private async getAllPositionsRecipients(): Promise<string[]> {
+		const alerts = await this.prisma.safeExecute(() =>
+			this.prisma.telegramUserAlert.findMany({ where: { type: 'allPositions', address: '' } })
+		);
+		return alerts?.map((a) => a.telegramId) ?? [];
+	}
+
+	// Returns unique telegramIds who watch the given position via allPositions or owner subscription.
+	private async getPositionRecipients(position: { owner: string }): Promise<string[]> {
+		const [allPosAlerts, ownerAlerts] = await Promise.all([
+			this.prisma.safeExecute(() => this.prisma.telegramUserAlert.findMany({ where: { type: 'allPositions', address: '' } })),
+			this.prisma.safeExecute(() =>
+				this.prisma.telegramUserAlert.findMany({ where: { type: 'owner', address: normalizeAddress(position.owner) } })
+			),
+		]);
+
+		const seen = new Set<string>();
+		for (const a of [...(allPosAlerts ?? []), ...(ownerAlerts ?? [])]) {
+			seen.add(a.telegramId);
+		}
+		return [...seen];
+	}
+
+	// ─── Update workflow ───────────────────────────────────────────────────────
+
 	async updateTelegram() {
-		// @dev: deactivated, verify indexer status before running workflow.
-		// give indexer and start up some time before starting with msg, alert, ...
-		// if (Date.now() < this.startUpTime + 20 * 60 * 1000) return; // 20min
 		const isSoftStart = Date.now() < this.startUpTime + 2 * 60 * 1000;
 
 		this.logger.debug('Updating Telegram');
 
-		// break if no groups are known
-		if (this.telegramGroupState?.groups == undefined) return;
-		if (this.telegramGroupState.groups.length == 0) return;
+		// GOVERNANCE ALERTS — proposals, CCIP, leadrate
 
-		// DEFAULT
-		// Minter Proposal
 		const mintersList = this.minter.getMintersList().list.filter((m) => m.applyDate * 1000 > this.telegramState.minterApplied);
 		if (mintersList.length > 0) {
-			this.telegramState.minterApplied = Date.now(); // do first, allows new income to handle next loop
+			this.telegramState.minterApplied = Date.now();
+			const groups = await this.getGovernanceRecipients();
 			for (const minter of mintersList) {
-				this.sendMessageAll(MinterProposalMessage(minter));
+				this.sendMessageGroup(groups, MinterProposalMessage(minter));
 			}
 		}
 
-		// Minter Proposal Vetoed
 		const mintersVetoed = this.minter
 			.getMintersList()
 			.list.filter((m) => m.denyDate > 0 && m.denyDate * 1000 > this.telegramState.minterVetoed);
 		if (mintersVetoed.length > 0) {
 			this.telegramState.minterVetoed = Date.now();
+			const groups = await this.getGovernanceRecipients();
 			for (const minter of mintersVetoed) {
-				this.sendMessageAll(MinterProposalVetoedMessage(minter));
+				this.sendMessageGroup(groups, MinterProposalVetoedMessage(minter));
 			}
 		}
 
-		// prepare leadrate
+		const leadrateRates = Object.values(this.leadrate.getInfo().rate[mainnet.id] || {});
 		const leadrateProposal = Object.values(this.leadrate.getInfo().open[mainnet.id] || {}).filter(
 			(p) => p.details.created * 1000 > this.telegramState.leadrateProposal
 		);
-		const leadrateRates = Object.values(this.leadrate.getInfo().rate[mainnet.id] || {});
-		const leadrateApplied = leadrateRates.filter((r) => r.created * 1000 > this.telegramState.leadrateChanged);
-
-		// Leadrate Proposal
 		if (leadrateProposal.length > 0) {
 			this.telegramState.leadrateProposal = Date.now();
+			const groups = await this.getGovernanceRecipients();
 			for (const p of leadrateProposal) {
-				this.sendMessageAll(LeadrateProposalMessage(p.details, leadrateRates));
+				this.sendMessageGroup(groups, LeadrateProposalMessage(p.details, leadrateRates));
 			}
 		}
 
-		// Leadrate Changed
+		const leadrateApplied = leadrateRates.filter((r) => r.created * 1000 > this.telegramState.leadrateChanged);
 		if (leadrateApplied.length > 0) {
 			this.telegramState.leadrateChanged = Date.now();
+			const groups = await this.getGovernanceRecipients();
 			for (const r of leadrateApplied) {
-				this.sendMessageAll(LeadrateChangedMessage(r));
+				this.sendMessageGroup(groups, LeadrateChangedMessage(r));
 			}
 		}
 
-		// Positions requested
 		const requestedPosition = Object.values(this.position.getPositionsRequests().map).filter(
 			(r) => r.start * 1000 > Date.now() && r.created * 1000 > this.telegramState.positions
 		);
 		if (requestedPosition.length > 0) {
 			this.telegramState.positions = Date.now();
+			const groups = await this.getGovernanceRecipients();
 			for (const p of requestedPosition) {
-				this.sendMessageAll(PositionProposalMessage(p));
+				this.sendMessageGroup(groups, PositionProposalMessage(p));
 			}
 		}
 
-		// Positions denied
 		const deniedPosition = Object.values(this.position.getPositionsDenied().map).filter(
 			(p) => p.denyDate > 0 && p.denyDate * 1000 > this.telegramState.positionsDenied
 		);
 		if (deniedPosition.length > 0) {
 			this.telegramState.positionsDenied = Date.now();
+			const groups = await this.getGovernanceRecipients();
 			for (const p of deniedPosition) {
-				this.sendMessageAll(PositionDeniedMessage(p));
+				this.sendMessageGroup(groups, PositionDeniedMessage(p));
 			}
 		}
 
-		// Positions expiring soon (24 hours)
-		const openPositions = Object.values(this.position.getPositionsOpen().map);
-		const expiringSoonPosition1 = openPositions.filter((p) => {
-			const stateDate = new Date(this.telegramState.positionsExpiringSoon1).getTime();
-			const warningDays = 1 * 24 * 60 * 60 * 1000;
-			const isSoon = p.expiration * 1000 < Date.now() + warningDays;
-			const isNew = isSoon && stateDate + warningDays < p.expiration * 1000;
-			return isSoon && isNew;
-		});
-		if (expiringSoonPosition1.length > 0) {
-			this.telegramState.positionsExpiringSoon1 = Date.now();
-			for (const p of expiringSoonPosition1) {
-				this.sendMessageAll(PositionExpiringSoonMessage(p));
+		const newCcipProposals = this.bridge.getPendingProposals().filter((p) => p.created * 1000 > this.telegramState.ccipProposalNew);
+		if (newCcipProposals.length > 0) {
+			this.telegramState.ccipProposalNew = Date.now();
+			const groups = await this.getGovernanceRecipients();
+			for (const proposal of newCcipProposals) {
+				this.sendMessageGroup(groups, CCIPProposalMessage(proposal));
 			}
 		}
 
-		// Positions expired
-		const expiredPosition = openPositions.filter((p) => {
-			const stateDate = new Date(this.telegramState.positionsExpired).getTime();
-			const isExpired = p.expiration * 1000 < Date.now();
-			const isNew = isExpired && stateDate < p.expiration * 1000;
-			return isExpired && isNew;
-		});
-		if (expiredPosition.length > 0) {
-			this.telegramState.positionsExpired = Date.now();
-			for (const p of expiredPosition) {
-				this.sendMessageAll(PositionExpiredMessage(p));
-			}
-		} else {
-			// @dev: fixes issue if ponder indexes and stateDate didnt change,
-			// it might happen that an old state will trigger this due to re-indexing
-
-			// reset to last 1h
-			if (Date.now() - this.telegramState.positionsExpired > 60 * 60 * 1000) {
-				this.telegramState.positionsExpired = Date.now() - 5 * 60 * 1000; // reduce 5min to allow latest expiration
+		const deniedCcipProposals = this.bridge
+			.getDeniedProposals()
+			.filter((p) => p.deniedAt * 1000 > this.telegramState.ccipProposalDenied);
+		if (deniedCcipProposals.length > 0) {
+			this.telegramState.ccipProposalDenied = Date.now();
+			const groups = await this.getGovernanceRecipients();
+			for (const proposal of deniedCcipProposals) {
+				this.sendMessageGroup(groups, CCIPProposalDeniedMessage(proposal));
 			}
 		}
 
-		// Position Price Warning
-		openPositions.forEach((p) => {
-			const posPrice = parseFloat(formatUnits(BigInt(p.price), 36 - p.collateralDecimals));
-			const THRES_LOWEST = 1; // 100%
-			const THRES_ALERT = 1.05; // 105%
-			const THRES_WARN = 1.1; // 110%
-			const DELAY_LOWEST = 2 * 60 * 60 * 1000; // 2h guard
-			const DELAY_ALERT = 12 * 60 * 60 * 1000; // 12h guard
-			const DELAY_WARNING = 24 * 60 * 60 * 1000; // 24h guard
-
-			// price query
-			const priceQuery: PriceQuery | undefined = this.prices.getPricesMapping()[normalizeAddress(p.collateral)];
-			if (priceQuery == undefined || priceQuery?.timestamp == 0) return false; // not found or still searching
-
-			// price check
-			const price = priceQuery.price.chf;
-			if (posPrice * THRES_WARN < price) return false; // below threshold
-
-			// get latest or make available
-			let last = this.telegramState.positionsPriceAlert.get(normalizeAddress(p.position));
-			if (last == undefined) {
-				last = {
-					warningPrice: 0,
-					warningTimestamp: 0,
-					alertPrice: 0,
-					alertTimestamp: 0,
-					lowestPrice: 0,
-					lowestTimestamp: 0,
-				};
-			}
-
-			const groups = this.getSubscribedGroups('/PriceAlerts');
-
-			if (price < posPrice * THRES_LOWEST) {
-				// below 100%
-				if (last.lowestTimestamp + DELAY_LOWEST < Date.now()) {
-					// delay guard passed // @dev: -2% threshold
-					if (last.lowestPrice == 0 || last.lowestPrice * 0.98 > price) {
-						!isSoftStart && this.sendMessageGroup(groups, PositionPriceLowest(p, priceQuery, last));
-						last.lowestPrice = price;
-					}
-					last.lowestTimestamp = Date.now();
-				}
-			} else if (price < posPrice * THRES_ALERT) {
-				// below 105%
-				if (last.alertTimestamp + DELAY_ALERT < Date.now()) {
-					// delay guard passed
-					!isSoftStart && this.sendMessageGroup(groups, PositionPriceAlert(p, priceQuery, last));
-					last.alertTimestamp = Date.now();
-					last.alertPrice = price;
-				}
-			} else if (price < posPrice * THRES_WARN) {
-				// if below 110 -> warning
-				if (last.alertTimestamp + DELAY_WARNING < Date.now()) {
-					if (last.warningTimestamp + DELAY_WARNING < Date.now()) {
-						// delay guard passed
-						!isSoftStart && this.sendMessageGroup(groups, PositionPriceWarning(p, priceQuery, last));
-						last.warningTimestamp = Date.now();
-						last.warningPrice = price;
-					}
-				}
-			}
-
-			// reset lowest price
-			if (price > posPrice * THRES_ALERT && last.lowestTimestamp > 0) {
-				last.lowestTimestamp = 0;
-				last.lowestPrice = 0;
-			}
-
-			// update state
-			this.telegramState.positionsPriceAlert.set(normalizeAddress(p.position), last);
-		});
-
-		// Challenges started
-		const challengesStarted = Object.values(this.challenge.getChallengesMapping().map).filter(
-			(c) => parseInt(c.created.toString()) * 1000 > this.telegramState.challenges
-		);
-		if (challengesStarted.length > 0) {
-			this.telegramState.challenges = Date.now();
-			for (const c of challengesStarted) {
-				const pos = this.position.getPositionsList().list.find((p) => normalizeAddress(p.position) == normalizeAddress(c.position));
-				if (pos == undefined) return;
-				this.sendMessageAll(ChallengeStartedMessage(pos, c));
+		const enactedCcipProposals = this.bridge
+			.getEnactedProposals()
+			.filter((p) => p.enactedAt * 1000 > this.telegramState.ccipProposalEnacted);
+		if (enactedCcipProposals.length > 0) {
+			this.telegramState.ccipProposalEnacted = Date.now();
+			const groups = await this.getGovernanceRecipients();
+			for (const proposal of enactedCcipProposals) {
+				this.sendMessageGroup(groups, CCIPProposalEnactedMessage(proposal));
 			}
 		}
 
-		// Bids taken
-		const bidsTaken = Object.values(this.challenge.getBidsMapping().map).filter(
-			(b) => parseInt(b.created.toString()) * 1000 > this.telegramState.bids
-		);
-		if (bidsTaken.length > 0) {
-			this.telegramState.bids = Date.now();
-			for (const b of bidsTaken) {
-				const position = this.position
-					.getPositionsList()
-					.list.find((p) => normalizeAddress(p.position) == normalizeAddress(b.position));
-				const challenge = this.challenge
-					.getChallenges()
-					.list.find((c) => normalizeAddress(c.position) == normalizeAddress(b.position) && c.number == b.number);
-				if (position == undefined || challenge == undefined) return;
-				this.sendMessageAll(BidTakenMessage(position, challenge, b));
+		const rateLimitUpdates = this.bridge
+			.getChains()
+			.list.filter((c) => c.rateLimitUpdatedAt !== null && c.rateLimitUpdatedAt * 1000 > this.telegramState.ccipRateLimit);
+		if (rateLimitUpdates.length > 0) {
+			this.telegramState.ccipRateLimit = Date.now();
+			const groups = await this.getGovernanceRecipients();
+			for (const chain of rateLimitUpdates) {
+				this.sendMessageGroup(groups, CCIPRateLimitMessage(chain));
 			}
 		}
 
-		// SUPSCRIPTION
-		// MintingUpdates
-		const requestedMintingUpdates = this.position
-			.getMintingUpdatesList()
-			.list.filter((m) => m.created * 1000 > this.telegramState.mintingUpdates && BigInt(m.mintedAdjusted) > 0n);
-		if (requestedMintingUpdates.length > 0) {
-			this.telegramState.mintingUpdates = Date.now();
-			const prices = this.prices.getPricesMapping();
-			for (const m of requestedMintingUpdates) {
-				const groups = this.getSubscribedGroups('/MintingUpdates');
-				this.sendMessageGroup(groups, MintingUpdateMessage(m, prices));
-			}
-		}
+		// GOVERNANCE ALERTS (equity) — large equity events
 
 		const { logs } = await this.analytics.getTransactionLog(true, 100);
 		const equityMinAmount = 10000;
+		const equityGroups = await this.getGovernanceRecipients();
+
 		const equityInvested = logs
 			.filter((i) => Number(i.timestamp) * 1000 > this.telegramState.equityInvested)
 			.filter((i) => i.kind == 'Equity:Invested')
@@ -442,7 +351,7 @@ export class TelegramService {
 		if (equityInvested.length > 0) {
 			this.telegramState.equityInvested = Date.now();
 			for (const i of equityInvested) {
-				this.sendMessageAll(EquityInvestedMessage(i));
+				this.sendMessageGroup(equityGroups, EquityInvestedMessage(i));
 			}
 		}
 
@@ -453,191 +362,258 @@ export class TelegramService {
 		if (equityRedeemed.length > 0) {
 			this.telegramState.equityRedeemed = Date.now();
 			for (const i of equityRedeemed) {
-				this.sendMessageAll(EquityRedeemedMessage(i));
+				this.sendMessageGroup(equityGroups, EquityRedeemedMessage(i));
 			}
 		}
 
-		// BRIDGE ALERTS — new proposals
-		const newCcipProposals = this.bridge.getPendingProposals().filter((p) => p.created * 1000 > this.telegramState.ccipProposalNew);
-		if (newCcipProposals.length > 0) {
-			this.telegramState.ccipProposalNew = Date.now();
-			for (const proposal of newCcipProposals) {
-				this.sendMessageAll(CCIPProposalMessage(proposal));
+		// POSITION-AWARE ALERTS — recipients = allPositions OR owner matches
+
+		const openPositions = Object.values(this.position.getPositionsOpen().map);
+
+		const expiringSoonPosition7 = openPositions.filter((p) => {
+			const stateDate = new Date(this.telegramState.positionsExpiringSoon7).getTime();
+			const warningDays = 7 * 24 * 60 * 60 * 1000;
+			const isSoon = p.expiration * 1000 < Date.now() + warningDays;
+			const isNew = isSoon && stateDate + warningDays < p.expiration * 1000;
+			return isSoon && isNew;
+		});
+		if (expiringSoonPosition7.length > 0) {
+			this.telegramState.positionsExpiringSoon7 = Date.now();
+			for (const p of expiringSoonPosition7) {
+				const recipients = await this.getPositionRecipients(p);
+				this.sendMessageGroup(recipients, PositionExpiringSoonMessage(p));
 			}
 		}
 
-		// BRIDGE ALERTS — denied proposals
-		const deniedCcipProposals = this.bridge
-			.getDeniedProposals()
-			.filter((p) => p.deniedAt * 1000 > this.telegramState.ccipProposalDenied);
-		if (deniedCcipProposals.length > 0) {
-			this.telegramState.ccipProposalDenied = Date.now();
-			for (const proposal of deniedCcipProposals) {
-				this.sendMessageAll(CCIPProposalDeniedMessage(proposal));
+		const expiringSoonPosition1 = openPositions.filter((p) => {
+			const stateDate = new Date(this.telegramState.positionsExpiringSoon1).getTime();
+			const warningDays = 1 * 24 * 60 * 60 * 1000;
+			const isSoon = p.expiration * 1000 < Date.now() + warningDays;
+			const isNew = isSoon && stateDate + warningDays < p.expiration * 1000;
+			return isSoon && isNew;
+		});
+		if (expiringSoonPosition1.length > 0) {
+			this.telegramState.positionsExpiringSoon1 = Date.now();
+			for (const p of expiringSoonPosition1) {
+				const recipients = await this.getPositionRecipients(p);
+				this.sendMessageGroup(recipients, PositionExpiringSoonMessage(p));
 			}
 		}
 
-		// BRIDGE ALERTS — enacted proposals
-		const enactedCcipProposals = this.bridge
-			.getEnactedProposals()
-			.filter((p) => p.enactedAt * 1000 > this.telegramState.ccipProposalEnacted);
-		if (enactedCcipProposals.length > 0) {
-			this.telegramState.ccipProposalEnacted = Date.now();
-			for (const proposal of enactedCcipProposals) {
-				this.sendMessageAll(CCIPProposalEnactedMessage(proposal));
+		const expiredPosition = openPositions.filter((p) => {
+			const stateDate = new Date(this.telegramState.positionsExpired).getTime();
+			const isExpired = p.expiration * 1000 < Date.now();
+			const isNew = isExpired && stateDate < p.expiration * 1000;
+			return isExpired && isNew;
+		});
+		if (expiredPosition.length > 0) {
+			this.telegramState.positionsExpired = Date.now();
+			for (const p of expiredPosition) {
+				const recipients = await this.getPositionRecipients(p);
+				this.sendMessageGroup(recipients, PositionExpiredMessage(p));
+			}
+		} else {
+			// @dev: fixes issue if ponder indexes and stateDate didnt change,
+			// it might happen that an old state will trigger this due to re-indexing
+			if (Date.now() - this.telegramState.positionsExpired > 60 * 60 * 1000) {
+				this.telegramState.positionsExpired = Date.now() - 5 * 60 * 1000;
 			}
 		}
 
-		// BRIDGE ALERTS — rate limit changes
-		const rateLimitUpdates = this.bridge
-			.getChains()
-			.list.filter((c) => c.rateLimitUpdatedAt !== null && c.rateLimitUpdatedAt * 1000 > this.telegramState.ccipRateLimit);
-		if (rateLimitUpdates.length > 0) {
-			this.telegramState.ccipRateLimit = Date.now();
-			for (const chain of rateLimitUpdates) {
-				this.sendMessageAll(CCIPRateLimitMessage(chain));
+		const requestedMintingUpdates = this.position
+			.getMintingUpdatesList()
+			.list.filter((m) => m.created * 1000 > this.telegramState.mintingUpdates && BigInt(m.mintedAdjusted) > 0n);
+		if (requestedMintingUpdates.length > 0) {
+			this.telegramState.mintingUpdates = Date.now();
+			const prices = this.prices.getPricesMapping();
+			for (const m of requestedMintingUpdates) {
+				const pos = openPositions.find((p) => normalizeAddress(p.position) === normalizeAddress(m.position));
+				if (!pos) continue;
+				const recipients = await this.getPositionRecipients(pos);
+				this.sendMessageGroup(recipients, MintingUpdateMessage(m, prices));
 			}
 		}
-	}
 
-	upsertTelegramGroup(id: number | string): boolean {
-		if (!id) return;
-		if (this.telegramGroupState.groups.includes(id.toString())) return false;
-		this.telegramGroupState.groups.push(id.toString());
-		this.logger.log(`Upserted Telegram Group: ${id}`);
-		this.sendMessage(id, WelcomeGroupMessage(id, this.telegramHandles));
-		return true;
-	}
-
-	async removeTelegramGroup(id: number | string): Promise<boolean> {
-		if (!id) return;
-		const inGroup: boolean = this.telegramGroupState.groups.includes(id.toString());
-		const inSubscription = !!this.telegramGroupState.subscription[id.toString()];
-		const update: boolean = inGroup || inSubscription;
-
-		if (inGroup) {
-			this.telegramGroupState.groups = this.telegramGroupState.groups.filter((g) => g !== id.toString());
-		}
-
-		if (inSubscription) {
-			delete this.telegramGroupState.subscription[id.toString()];
-		}
-
-		if (update) {
-			this.logger.log(`Removed Telegram Group: ${id}`);
-			await this.removeBackupGroups([String(id)]);
-		}
-
-		return update;
-	}
-
-	getSubscribedGroups(handle: string): string[] {
-		const key = handle.replace('/', '');
-		return (
-			Object.entries(this.telegramGroupState.subscription)
-				// eslint-disable-next-line @typescript-eslint/no-unused-vars
-				.filter(([_, subs]) => subs[key])
-				.map(([chatId]) => chatId)
+		const challengesStarted = Object.values(this.challenge.getChallengesMapping().map).filter(
+			(c) => parseInt(c.created.toString()) * 1000 > this.telegramState.challenges
 		);
-	}
+		if (challengesStarted.length > 0) {
+			this.telegramState.challenges = Date.now();
+			for (const c of challengesStarted) {
+				const pos = this.position.getPositionsList().list.find((p) => normalizeAddress(p.position) == normalizeAddress(c.position));
+				if (pos == undefined) continue;
+				const recipients = await this.getPositionRecipients(pos);
+				this.sendMessageGroup(recipients, ChallengeStartedMessage(pos, c));
+			}
+		}
 
-	private buildSubscriptionKeyboard(chatId: string): TelegramBot.InlineKeyboardButton[][] {
-		const subs = this.telegramGroupState.subscription[chatId] || {};
-		return [
-			[{ text: `${subs['MintingUpdates'] ? '✅' : '⬜'} Minting Updates`, callback_data: 'sub:MintingUpdates' }],
-			[{ text: `${subs['PriceAlerts'] ? '✅' : '⬜'} Price Alerts`, callback_data: 'sub:PriceAlerts' }],
-			[{ text: `${subs['WeeklyInfos'] ? '✅' : '⬜'} Weekly Infos`, callback_data: 'sub:WeeklyInfos' }],
-		];
-	}
+		const bidsTaken = Object.values(this.challenge.getBidsMapping().map).filter(
+			(b) => parseInt(b.created.toString()) * 1000 > this.telegramState.bids
+		);
+		if (bidsTaken.length > 0) {
+			this.telegramState.bids = Date.now();
+			for (const b of bidsTaken) {
+				const pos = this.position.getPositionsList().list.find((p) => normalizeAddress(p.position) == normalizeAddress(b.position));
+				const challenge = this.challenge
+					.getChallenges()
+					.list.find((c) => normalizeAddress(c.position) == normalizeAddress(b.position) && c.number == b.number);
+				if (pos == undefined || challenge == undefined) continue;
+				const recipients = await this.getPositionRecipients(pos);
+				this.sendMessageGroup(recipients, BidTakenMessage(pos, challenge, b));
+			}
+		}
 
-	private async sendSubscriptionMenu(chatId: number | string) {
-		const id = chatId.toString();
-		try {
-			await this.bot.sendMessage(id, '📡 *Manage Subscriptions*\n\nTap to toggle an alert type on or off:', {
-				parse_mode: 'Markdown',
-				reply_markup: { inline_keyboard: this.buildSubscriptionKeyboard(id) },
-			});
-		} catch (error) {
-			this.logger.warn(`Failed to send subscription menu to ${id}: ${error?.message}`);
+		// Price alerts — per-position cooldown via positionsPriceAlert keyed by posAddr
+		const THRES_LOWEST = 1;
+		const THRES_ALERT = 1.05;
+		const THRES_WARN = 1.1;
+		const DELAY_LOWEST = 2 * 60 * 60 * 1000;
+		const DELAY_ALERT = 12 * 60 * 60 * 1000;
+		const DELAY_WARNING = 24 * 60 * 60 * 1000;
+
+		for (const p of openPositions) {
+			const posPrice = parseFloat(formatUnits(BigInt(p.price), 36 - p.collateralDecimals));
+			const priceQuery: PriceQuery | undefined = this.prices.getPricesMapping()[normalizeAddress(p.collateral)];
+			if (priceQuery == undefined || priceQuery.timestamp === 0) continue;
+
+			const price = priceQuery.price.chf;
+			if (posPrice * THRES_WARN < price) continue;
+
+			const recipients = await this.getPositionRecipients(p);
+			if (!recipients.length) continue;
+
+			const posAddr = normalizeAddress(p.position);
+			const last = this.telegramState.positionsPriceAlert.get(posAddr) ?? {
+				alertTimestamp: 0,
+				warningTimestamp: 0,
+				lowestTimestamp: 0,
+				lowestPrice: 0,
+			};
+
+			if (price < posPrice * THRES_LOWEST) {
+				if (last.lowestTimestamp + DELAY_LOWEST < Date.now()) {
+					if (last.lowestPrice === 0 || last.lowestPrice * 0.98 > price) {
+						!isSoftStart && (await this.sendMessageGroup(recipients, PositionPriceLowest(p, priceQuery, last)));
+						last.lowestPrice = price;
+					}
+					last.lowestTimestamp = Date.now();
+				}
+			} else if (price < posPrice * THRES_ALERT) {
+				if (last.alertTimestamp + DELAY_ALERT < Date.now()) {
+					!isSoftStart && (await this.sendMessageGroup(recipients, PositionPriceAlert(p, priceQuery, last)));
+					last.alertTimestamp = Date.now();
+				}
+			} else if (price < posPrice * THRES_WARN) {
+				if (last.warningTimestamp + DELAY_WARNING < Date.now()) {
+					!isSoftStart && (await this.sendMessageGroup(recipients, PositionPriceWarning(p, priceQuery, last)));
+					last.warningTimestamp = Date.now();
+				}
+			}
+
+			if (price > posPrice * THRES_ALERT && last.lowestTimestamp > 0) {
+				last.lowestTimestamp = 0;
+				last.lowestPrice = 0;
+			}
+
+			this.telegramState.positionsPriceAlert.set(posAddr, last);
 		}
 	}
+
+	// ─── Command handlers ─────────────────────────────────────────────────────
+
+	private async handleStart(chatId: number | string, id: string, param: string): Promise<void> {
+		if (param === '') {
+			await this.addAlert(id, 'governance', '');
+			await this.addAlert(id, 'allPositions', '');
+			await this.sendMessage(chatId, '✅ Subscribed to *Governance* and *All Positions* alerts.');
+		} else if (param.toUpperCase() === 'GOV') {
+			await this.addAlert(id, 'governance', '');
+			await this.sendMessage(chatId, '✅ Subscribed to *Governance* alerts.');
+		} else if (param.toUpperCase() === 'ALL') {
+			await this.addAlert(id, 'allPositions', '');
+			await this.sendMessage(chatId, '✅ Subscribed to *All Positions* alerts.');
+		} else if (ADDRESS_REGEX.test(param)) {
+			const addr = normalizeAddress(param);
+			await this.addAlert(id, 'owner', addr);
+			await this.sendMessage(chatId, `✅ Subscribed to owner \`${addr}\`.`);
+		} else {
+			await this.sendMessage(
+				chatId,
+				`⚠️ Unknown parameter: \`${param}\`\n\nUsage: /start · /start GOV · /start ALL · /start <owner address>`
+			);
+		}
+	}
+
+	private async handleStop(chatId: number | string, id: string, param: string): Promise<void> {
+		if (param === '') {
+			await this.sendMessage(chatId, `ℹ️ Specify what to stop:\n/stop GOV · /stop ALL · /stop <owner address>`);
+		} else if (param.toUpperCase() === 'GOV') {
+			await this.removeAlert(id, 'governance', '');
+			await this.sendMessage(chatId, '✅ Governance alerts removed.');
+		} else if (param.toUpperCase() === 'ALL') {
+			await this.removeAlert(id, 'allPositions', '');
+			await this.sendMessage(chatId, '✅ All Positions alerts removed.');
+		} else if (ADDRESS_REGEX.test(param)) {
+			const addr = normalizeAddress(param);
+			await this.removeAlert(id, 'owner', addr);
+			await this.sendMessage(chatId, `✅ Stopped tracking \`${addr}\`.`);
+		} else {
+			await this.sendMessage(chatId, `⚠️ Unknown parameter: \`${param}\`\n\nUsage: /stop GOV · /stop ALL · /stop <owner address>`);
+		}
+	}
+
+	private async handleStatus(chatId: number | string, id: string): Promise<void> {
+		const alerts = await this.prisma.safeExecute(() => this.prisma.telegramUserAlert.findMany({ where: { telegramId: id } }));
+		const governance = alerts?.some((a) => a.type === 'governance') ?? false;
+		const allPositions = alerts?.some((a) => a.type === 'allPositions') ?? false;
+		const owners = alerts?.filter((a) => a.type === 'owner').map((a) => a.address) ?? [];
+		await this.sendMessage(chatId, StatusMessage(chatId, governance, allPositions, owners));
+	}
+
+	// ─── Bot listener ─────────────────────────────────────────────────────────
 
 	async applyListener() {
 		try {
 			await this.bot.setMyCommands([
-				{ command: 'start', description: 'Connect this chat & show info' },
-				{ command: 'help', description: 'Show status & subscriptions' },
-				{ command: 'subscribe', description: 'Manage alert subscriptions' },
+				{ command: 'start', description: 'Subscribe to alerts (GOV, ALL, or owner address)' },
+				{ command: 'stop', description: 'Unsubscribe (GOV, ALL, or owner address)' },
+				{ command: 'status', description: 'Show your active subscriptions' },
+				{ command: 'help', description: 'Show available commands' },
 			]);
 			this.logger.log('Bot command menu registered');
 		} catch (e) {
 			this.logger.warn(`Failed to set bot commands: ${e.message}`);
 		}
 
-		const toggle = (handle: string, msg: TelegramBot.Message) => {
-			if (handle !== msg.text) return;
-			const group = msg.chat.id.toString();
-			const key = handle.replace('/', '');
-			const chatSubs = this.telegramGroupState.subscription[group] || {};
-			if (chatSubs[key]) {
-				delete chatSubs[key];
-				this.sendMessage(group, `⬜ Unsubscribed from *${handle}*`);
-			} else {
-				chatSubs[key] = true;
-				this.sendMessage(group, `✅ Subscribed to *${handle}*`);
-			}
-			this.telegramGroupState.subscription[group] = chatSubs;
-			this.writeBackupGroups([group]);
-		};
-
 		this.bot.on('message', async (m) => {
-			if (this.upsertTelegramGroup(m.chat.id) == true) await this.writeBackupGroups([String(m.chat.id)]);
+			await this.upsertTelegramGroup(m.chat.id);
 
-			if (m.text === '/start' || m.text === '/help') {
-				await this.sendMessage(
-					m.chat.id,
-					HelpMessage(this.telegramHandles, this.telegramGroupState.subscription[m.chat.id.toString()] || {})
-				);
-			} else if (m.text === '/subscribe') {
-				await this.sendSubscriptionMenu(m.chat.id);
-			} else {
-				this.telegramHandles.forEach((h) => toggle(h, m));
+			const text = m.text?.replace(/^(\/\w+)@\w+/, '$1');
+			if (!text) return;
+
+			const id = m.chat.id.toString();
+
+			if (text.startsWith('/start')) {
+				const param = text.slice(6).trim();
+				await this.handleStart(m.chat.id, id, param);
+			} else if (text.startsWith('/stop')) {
+				const param = text.slice(5).trim();
+				await this.handleStop(m.chat.id, id, param);
+			} else if (text === '/status') {
+				await this.handleStatus(m.chat.id, id);
+			} else if (text === '/help') {
+				await this.sendMessage(m.chat.id, WelcomeGroupMessage(m.chat.id));
 			}
-		});
-
-		this.bot.on('callback_query', async (query) => {
-			if (!query.data?.startsWith('sub:')) return;
-			const handle = query.data.replace('sub:', '');
-			const chatId = query.message.chat.id.toString();
-
-			const chatSubs = this.telegramGroupState.subscription[chatId] || {};
-			if (chatSubs[handle]) {
-				delete chatSubs[handle];
-			} else {
-				chatSubs[handle] = true;
-			}
-			this.telegramGroupState.subscription[chatId] = chatSubs;
-			await this.writeBackupGroups([chatId]);
-
-			try {
-				await this.bot.editMessageReplyMarkup(
-					{ inline_keyboard: this.buildSubscriptionKeyboard(chatId) },
-					{ chat_id: query.message.chat.id, message_id: query.message.message_id }
-				);
-			} catch (_) {}
-
-			const isOn = !!chatSubs[handle];
-			await this.bot.answerCallbackQuery(query.id, {
-				text: isOn ? `✅ Subscribed to ${handle}` : `⬜ Unsubscribed from ${handle}`,
-			});
 		});
 	}
 
+	// ─── Scheduled jobs ───────────────────────────────────────────────────────
+
 	@Cron(CronExpression.EVERY_WEEK)
-	scheduleWeeklyInfos() {
-		const days = 3600 * 24 * 30; // seconds
+	async scheduleWeeklyInfos() {
+		const days = 3600 * 24 * 30;
 		const infos = this.analytics.getDailyLog().logs.filter((i) => Number(i.timestamp) >= Date.now() / 1000 - days);
-		const groups = this.getSubscribedGroups('/WeeklyInfos');
+		const groups = await this.getGovernanceRecipients();
 
 		const before = infos.at(0);
 		const now = infos.at(-1);
