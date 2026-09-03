@@ -216,11 +216,15 @@ export class TelegramService {
 			),
 		]);
 
-		const seen = new Set<string>();
-		for (const a of [...(allPosAlerts ?? []), ...(ownerAlerts ?? [])]) {
-			seen.add(a.telegramId);
-		}
-		return [...seen];
+		return this.mergeRecipients(
+			(allPosAlerts ?? []).map((a) => a.telegramId),
+			(ownerAlerts ?? []).map((a) => a.telegramId)
+		);
+	}
+
+	// Deduplicates and merges any number of recipient lists into one.
+	private mergeRecipients(...lists: string[][]): string[] {
+		return [...new Set(lists.flat())];
 	}
 
 	// ─── Update workflow ───────────────────────────────────────────────────────
@@ -230,14 +234,16 @@ export class TelegramService {
 
 		this.logger.debug('Updating Telegram');
 
+		// Governance recipients are stable for the duration of a single update cycle — fetch once, reuse everywhere below.
+		const governanceRecipients = await this.getGovernanceRecipients();
+
 		// GOVERNANCE ALERTS — proposals, CCIP, leadrate
 
 		const mintersList = this.minter.getMintersList().list.filter((m) => m.applyDate * 1000 > this.telegramState.minterApplied);
 		if (mintersList.length > 0) {
 			this.telegramState.minterApplied = Date.now();
-			const groups = await this.getGovernanceRecipients();
 			for (const minter of mintersList) {
-				this.sendMessageGroup(groups, MinterProposalMessage(minter));
+				this.sendMessageGroup(governanceRecipients, MinterProposalMessage(minter));
 			}
 		}
 
@@ -246,9 +252,8 @@ export class TelegramService {
 			.list.filter((m) => m.denyDate > 0 && m.denyDate * 1000 > this.telegramState.minterVetoed);
 		if (mintersVetoed.length > 0) {
 			this.telegramState.minterVetoed = Date.now();
-			const groups = await this.getGovernanceRecipients();
 			for (const minter of mintersVetoed) {
-				this.sendMessageGroup(groups, MinterProposalVetoedMessage(minter));
+				this.sendMessageGroup(governanceRecipients, MinterProposalVetoedMessage(minter));
 			}
 		}
 
@@ -258,18 +263,16 @@ export class TelegramService {
 		);
 		if (leadrateProposal.length > 0) {
 			this.telegramState.leadrateProposal = Date.now();
-			const groups = await this.getGovernanceRecipients();
 			for (const p of leadrateProposal) {
-				this.sendMessageGroup(groups, LeadrateProposalMessage(p.details, leadrateRates));
+				this.sendMessageGroup(governanceRecipients, LeadrateProposalMessage(p.details, leadrateRates));
 			}
 		}
 
 		const leadrateApplied = leadrateRates.filter((r) => r.created * 1000 > this.telegramState.leadrateChanged);
 		if (leadrateApplied.length > 0) {
 			this.telegramState.leadrateChanged = Date.now();
-			const groups = await this.getGovernanceRecipients();
 			for (const r of leadrateApplied) {
-				this.sendMessageGroup(groups, LeadrateChangedMessage(r));
+				this.sendMessageGroup(governanceRecipients, LeadrateChangedMessage(r));
 			}
 		}
 
@@ -278,10 +281,9 @@ export class TelegramService {
 		);
 		if (requestedPosition.length > 0) {
 			this.telegramState.positions = Date.now();
-			const groups = await this.getGovernanceRecipients();
 			for (const p of requestedPosition) {
 				try {
-					this.sendMessageGroup(groups, PositionProposalMessage(p));
+					this.sendMessageGroup(governanceRecipients, PositionProposalMessage(p));
 				} catch (error) {
 					this.logger.error(
 						`Failed to format position proposal ${p.position}: ${error instanceof Error ? error.message : String(error)}`
@@ -295,18 +297,16 @@ export class TelegramService {
 		);
 		if (deniedPosition.length > 0) {
 			this.telegramState.positionsDenied = Date.now();
-			const groups = await this.getGovernanceRecipients();
 			for (const p of deniedPosition) {
-				this.sendMessageGroup(groups, PositionDeniedMessage(p));
+				this.sendMessageGroup(governanceRecipients, PositionDeniedMessage(p));
 			}
 		}
 
 		const newCcipProposals = this.bridge.getPendingProposals().filter((p) => p.created * 1000 > this.telegramState.ccipProposalNew);
 		if (newCcipProposals.length > 0) {
 			this.telegramState.ccipProposalNew = Date.now();
-			const groups = await this.getGovernanceRecipients();
 			for (const proposal of newCcipProposals) {
-				this.sendMessageGroup(groups, CCIPProposalMessage(proposal));
+				this.sendMessageGroup(governanceRecipients, CCIPProposalMessage(proposal));
 			}
 		}
 
@@ -315,9 +315,8 @@ export class TelegramService {
 			.filter((p) => p.deniedAt * 1000 > this.telegramState.ccipProposalDenied);
 		if (deniedCcipProposals.length > 0) {
 			this.telegramState.ccipProposalDenied = Date.now();
-			const groups = await this.getGovernanceRecipients();
 			for (const proposal of deniedCcipProposals) {
-				this.sendMessageGroup(groups, CCIPProposalDeniedMessage(proposal));
+				this.sendMessageGroup(governanceRecipients, CCIPProposalDeniedMessage(proposal));
 			}
 		}
 
@@ -326,9 +325,8 @@ export class TelegramService {
 			.filter((p) => p.enactedAt * 1000 > this.telegramState.ccipProposalEnacted);
 		if (enactedCcipProposals.length > 0) {
 			this.telegramState.ccipProposalEnacted = Date.now();
-			const groups = await this.getGovernanceRecipients();
 			for (const proposal of enactedCcipProposals) {
-				this.sendMessageGroup(groups, CCIPProposalEnactedMessage(proposal));
+				this.sendMessageGroup(governanceRecipients, CCIPProposalEnactedMessage(proposal));
 			}
 		}
 
@@ -337,9 +335,8 @@ export class TelegramService {
 			.list.filter((c) => c.rateLimitUpdatedAt !== null && c.rateLimitUpdatedAt * 1000 > this.telegramState.ccipRateLimit);
 		if (rateLimitUpdates.length > 0) {
 			this.telegramState.ccipRateLimit = Date.now();
-			const groups = await this.getGovernanceRecipients();
 			for (const chain of rateLimitUpdates) {
-				this.sendMessageGroup(groups, CCIPRateLimitMessage(chain));
+				this.sendMessageGroup(governanceRecipients, CCIPRateLimitMessage(chain));
 			}
 		}
 
@@ -347,7 +344,6 @@ export class TelegramService {
 
 		const { logs } = await this.analytics.getTransactionLog(true, 100);
 		const equityMinAmount = 10000;
-		const equityGroups = await this.getGovernanceRecipients();
 
 		const equityInvested = logs
 			.filter((i) => Number(i.timestamp) * 1000 > this.telegramState.equityInvested)
@@ -356,7 +352,7 @@ export class TelegramService {
 		if (equityInvested.length > 0) {
 			this.telegramState.equityInvested = Date.now();
 			for (const i of equityInvested) {
-				this.sendMessageGroup(equityGroups, EquityInvestedMessage(i));
+				this.sendMessageGroup(governanceRecipients, EquityInvestedMessage(i));
 			}
 		}
 
@@ -367,7 +363,7 @@ export class TelegramService {
 		if (equityRedeemed.length > 0) {
 			this.telegramState.equityRedeemed = Date.now();
 			for (const i of equityRedeemed) {
-				this.sendMessageGroup(equityGroups, EquityRedeemedMessage(i));
+				this.sendMessageGroup(governanceRecipients, EquityRedeemedMessage(i));
 			}
 		}
 
@@ -414,7 +410,8 @@ export class TelegramService {
 		if (expiredPosition.length > 0) {
 			this.telegramState.positionsExpired = Date.now();
 			for (const p of expiredPosition) {
-				const recipients = await this.getPositionRecipients(p);
+				const positionRecipients = await this.getPositionRecipients(p);
+				const recipients = this.mergeRecipients(positionRecipients, governanceRecipients);
 				this.sendMessageGroup(recipients, PositionExpiredMessage(p));
 			}
 		} else {
@@ -447,7 +444,8 @@ export class TelegramService {
 			for (const c of challengesStarted) {
 				const pos = this.position.getPositionsList().list.find((p) => normalizeAddress(p.position) == normalizeAddress(c.position));
 				if (pos == undefined) continue;
-				const recipients = await this.getPositionRecipients(pos);
+				const positionRecipients = await this.getPositionRecipients(pos);
+				const recipients = this.mergeRecipients(positionRecipients, governanceRecipients);
 				this.sendMessageGroup(recipients, ChallengeStartedMessage(pos, c));
 			}
 		}
@@ -463,7 +461,8 @@ export class TelegramService {
 					.getChallenges()
 					.list.find((c) => normalizeAddress(c.position) == normalizeAddress(b.position) && c.number == b.number);
 				if (pos == undefined || challenge == undefined) continue;
-				const recipients = await this.getPositionRecipients(pos);
+				const positionRecipients = await this.getPositionRecipients(pos);
+				const recipients = this.mergeRecipients(positionRecipients, governanceRecipients);
 				this.sendMessageGroup(recipients, BidTakenMessage(pos, challenge, b));
 			}
 		}
@@ -498,7 +497,8 @@ export class TelegramService {
 			if (price < posPrice * THRES_LOWEST) {
 				if (last.lowestTimestamp + DELAY_LOWEST < Date.now()) {
 					if (last.lowestPrice === 0 || last.lowestPrice * 0.98 > price) {
-						!isSoftStart && (await this.sendMessageGroup(recipients, PositionPriceLowest(p, priceQuery, last)));
+						const lowestRecipients = this.mergeRecipients(recipients, governanceRecipients);
+						!isSoftStart && (await this.sendMessageGroup(lowestRecipients, PositionPriceLowest(p, priceQuery, last)));
 						last.lowestPrice = price;
 					}
 					last.lowestTimestamp = Date.now();
