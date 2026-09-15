@@ -7,6 +7,9 @@ import { PositionPriceAlertState } from 'integrations/telegram/telegram.types';
 function priceBody(position: PositionQuery, price: PriceQuery): string {
 	const bal = tokenAmountNumber(position.collateralBalance, position.collateralDecimals);
 	const posPrice = liqPriceNumber(position.price, position.collateralDecimals);
+	const minted = tokenAmountNumber(position.minted, 18);
+	const reserve = (minted * position.reserveContribution) / 1_000_000;
+	const debt = minted - reserve;
 
 	const sym = escapeMd(position.collateralSymbol);
 	const name = escapeMd(position.collateralName);
@@ -15,10 +18,17 @@ function priceBody(position: PositionQuery, price: PriceQuery): string {
 💎 *${name} (${sym})* — *${formatCurrency(bal, 2, 2)} ${sym}*
 
    Liq. Price: *${formatCurrency(posPrice, 2, 2)} ZCHF*
-   Market Price: *${formatCurrency(price.price.chf, 2, 2)} ZCHF*`;
+   Market Price: *${formatCurrency(price.price.chf, 2, 2)} ZCHF*
+   Debt: *${formatCurrency(debt, 2, 2)} ZCHF*
+   Reserve: *${formatCurrency(reserve, 2, 2)} ZCHF*`;
 }
 
-export function PositionPriceLowest(position: PositionQuery, price: PriceQuery, last: PositionPriceAlertState): string {
+export function PositionPriceLowest(
+	position: PositionQuery,
+	price: PriceQuery,
+	last: PositionPriceAlertState,
+	challengedPct: number
+): string {
 	const posPrice = liqPriceNumber(position.price, position.collateralDecimals);
 	const ratio = Math.round((price.price.chf / posPrice) * 10000) / 100;
 
@@ -26,11 +36,17 @@ export function PositionPriceLowest(position: PositionQuery, price: PriceQuery, 
 
 ${priceBody(position, price)}
    *Collateralization: ${ratio}%* 🔴
+   Challenged: *${formatCurrency(challengedPct, 2, 2)}%*
 
 [⚔️ Challenge](${AppUrl(`/monitoring/${position.position}/challenge`)}) · [📋 Position](${AppUrl(`/monitoring/${position.position}`)})`;
 }
 
-export function PositionPriceAlert(position: PositionQuery, price: PriceQuery, last: PositionPriceAlertState): string {
+export function PositionPriceAlert(
+	position: PositionQuery,
+	price: PriceQuery,
+	last: PositionPriceAlertState,
+	challengedPct: number
+): string {
 	const posPrice = liqPriceNumber(position.price, position.collateralDecimals);
 	const ratio = Math.round((price.price.chf / posPrice) * 10000) / 100;
 
@@ -38,6 +54,7 @@ export function PositionPriceAlert(position: PositionQuery, price: PriceQuery, l
 
 ${priceBody(position, price)}
    *Collateralization: ${ratio}%* 🚨
+   Challenged: *${formatCurrency(challengedPct, 2, 2)}%*
 
 [⚔️ Challenge](${AppUrl(`/monitoring/${position.position}/challenge`)}) · [📋 Position](${AppUrl(`/monitoring/${position.position}`)})`;
 }
