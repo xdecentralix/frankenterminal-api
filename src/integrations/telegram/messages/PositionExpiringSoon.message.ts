@@ -1,12 +1,12 @@
 import { PositionQuery } from 'modules/positions/positions.types';
-import { escapeMd, formatCurrency, shortenString } from 'utils/format';
+import { escapeMd, formatCurrency, liqPriceNumber, shortenString, tokenAmountNumber } from 'utils/format';
 import { AppUrl, ExplorerAddressUrl } from 'utils/func-helper';
 import { formatUnits } from 'viem';
 
 export function PositionExpiringSoonMessage(position: PositionQuery): string {
-	const bal = parseInt(formatUnits(BigInt(position.collateralBalance), position.collateralDecimals - 2)) / 100;
-	const min = parseInt(formatUnits(BigInt(position.minimumCollateral), position.collateralDecimals - 2)) / 100;
-	const price = parseInt(formatUnits(BigInt(position.price), 36 - position.collateralDecimals - 2)) / 100;
+	const bal = tokenAmountNumber(position.collateralBalance, position.collateralDecimals);
+	const min = tokenAmountNumber(position.minimumCollateral, position.collateralDecimals);
+	const price = liqPriceNumber(position.price, position.collateralDecimals);
 	const expiryDate = new Date(position.expiration * 1000);
 	const expiryDays = formatCurrency((position.expiration * 1000 - Date.now()) / 1000 / 60 / 60 / 24);
 	const auctionHours = Math.floor(position.challengePeriod / 3600);

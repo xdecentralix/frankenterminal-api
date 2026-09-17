@@ -19,14 +19,13 @@ import { LeadrateChangedMessage } from './messages/LeadrateChanged.message';
 import { BidTakenMessage } from './messages/BidTaken.message';
 import { PositionExpiringSoonMessage } from './messages/PositionExpiringSoon.message';
 import { PositionExpiredMessage } from './messages/PositionExpired.message';
-import { formatUnits } from 'viem';
 import { PriceQuery } from 'modules/prices/prices.types';
 import { PositionPriceAlert, PositionPriceLowest, PositionPriceWarning } from './messages/PositionPrice.message';
 import { AnalyticsService } from 'modules/analytics/analytics.service';
 import { WeeklyInfosMessage } from './messages/WeeklyInfos.message';
 import { mainnet } from 'viem/chains';
 import { EcosystemFrankencoinService } from 'modules/ecosystem/ecosystem.frankencoin.service';
-import { formatFloat, normalizeAddress } from 'utils/format';
+import { formatFloat, liqPriceNumber, normalizeAddress } from 'utils/format';
 import { EquityInvestedMessage } from './messages/EquityInvested.message';
 import { EquityRedeemedMessage } from './messages/EquityRedeemed.message';
 import { PositionDeniedMessage } from './messages/PositionDenied.message';
@@ -281,7 +280,13 @@ export class TelegramService {
 			this.telegramState.positions = Date.now();
 			const groups = await this.getGovernanceRecipients();
 			for (const p of requestedPosition) {
-				this.sendMessageGroup(groups, PositionProposalMessage(p));
+				try {
+					this.sendMessageGroup(groups, PositionProposalMessage(p));
+				} catch (error) {
+					this.logger.error(
+						`Failed to format position proposal ${p.position}: ${error instanceof Error ? error.message : String(error)}`
+					);
+				}
 			}
 		}
 
@@ -472,7 +477,7 @@ export class TelegramService {
 		const DELAY_WARNING = 24 * 60 * 60 * 1000;
 
 		for (const p of openPositions) {
-			const posPrice = parseFloat(formatUnits(BigInt(p.price), 36 - p.collateralDecimals));
+			const posPrice = liqPriceNumber(p.price, p.collateralDecimals);
 			const priceQuery: PriceQuery | undefined = this.prices.getPricesMapping()[normalizeAddress(p.collateral)];
 			if (priceQuery == undefined || priceQuery.timestamp === 0) continue;
 

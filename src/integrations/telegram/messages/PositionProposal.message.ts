@@ -1,12 +1,12 @@
 import { PositionQuery } from 'modules/positions/positions.types';
-import { escapeMd, formatCurrency, shortenString } from 'utils/format';
+import { escapeMd, formatCurrency, formatLiqPriceUnits, formatTokenUnits, shortenString } from 'utils/format';
 import { AppUrl, ExplorerAddressUrl } from 'utils/func-helper';
 import { formatUnits } from 'viem';
 
 export function PositionProposalMessage(position: PositionQuery): string {
-	const bal = formatUnits(BigInt(position.collateralBalance), position.collateralDecimals);
-	const min = formatUnits(BigInt(position.minimumCollateral), position.collateralDecimals);
-	const price = formatUnits(BigInt(position.price), 36 - position.collateralDecimals);
+	const bal = formatTokenUnits(position.collateralBalance, position.collateralDecimals);
+	const min = formatTokenUnits(position.minimumCollateral, position.collateralDecimals);
+	const price = formatLiqPriceUnits(position.price, position.collateralDecimals);
 	const start = new Date(position.start * 1000).toUTCString();
 	const expiryDays = Math.floor((position.expiration * 1000 - Date.now()) / 1000 / 60 / 60 / 24);
 	const auctionHours = Math.floor(position.challengePeriod / 3600);

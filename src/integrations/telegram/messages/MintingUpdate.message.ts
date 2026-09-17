@@ -1,12 +1,12 @@
 import { MintingUpdateQuery } from 'modules/positions/positions.types';
 import { PriceQuery, PriceQueryObjectArray } from 'modules/prices/prices.types';
-import { escapeMd, formatCurrency, normalizeAddress, shortenString } from 'utils/format';
+import { escapeMd, formatCurrency, liqPriceNumber, normalizeAddress, shortenString } from 'utils/format';
 import { formatUnits } from 'viem';
 import { AppUrl, ExplorerAddressUrl, ExplorerTxUrl } from 'utils/func-helper';
 
 export function MintingUpdateMessage(minting: MintingUpdateQuery, prices: PriceQueryObjectArray): string {
 	const marketPrice = (prices[normalizeAddress(minting.collateral)] as PriceQuery).price?.chf || 1;
-	const liqPrice = parseFloat(formatUnits(BigInt(minting.price), 36 - minting.collateralDecimals));
+	const liqPrice = liqPriceNumber(minting.price, minting.collateralDecimals);
 	const ratio = marketPrice / liqPrice;
 	const minted = parseFloat(formatUnits(BigInt(minting.minted), 18));
 	const mintedAdjusted = parseFloat(formatUnits(BigInt(minting.mintedAdjusted), 18));

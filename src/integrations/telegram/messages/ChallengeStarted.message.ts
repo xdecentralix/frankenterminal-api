@@ -1,13 +1,12 @@
 import { ChallengesQueryItem } from 'modules/challenges/challenges.types';
 import { PositionQuery } from 'modules/positions/positions.types';
-import { escapeMd, formatCurrency, shortenString } from 'utils/format';
+import { escapeMd, formatCurrency, liqPriceNumber, shortenString, tokenAmountNumber } from 'utils/format';
 import { AppUrl, ExplorerAddressUrl } from 'utils/func-helper';
-import { formatUnits } from 'viem';
 
 export function ChallengeStartedMessage(position: PositionQuery, challenge: ChallengesQueryItem): string {
-	const size = parseInt(formatUnits(BigInt(challenge.size), position.collateralDecimals - 2)) / 100;
-	const min = parseInt(formatUnits(BigInt(position.minimumCollateral), position.collateralDecimals - 2)) / 100;
-	const price = parseInt(formatUnits(BigInt(challenge.liqPrice), 36 - position.collateralDecimals - 2)) / 100;
+	const size = tokenAmountNumber(challenge.size, position.collateralDecimals);
+	const min = tokenAmountNumber(position.minimumCollateral, position.collateralDecimals);
+	const price = liqPriceNumber(challenge.liqPrice, position.collateralDecimals);
 	const duration = parseInt(challenge.duration.toString()) * 1000;
 
 	const startMs = parseInt(challenge.start.toString()) * 1000;

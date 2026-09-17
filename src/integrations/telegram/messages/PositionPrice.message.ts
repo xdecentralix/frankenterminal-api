@@ -1,13 +1,12 @@
 import { PriceQuery } from 'modules/prices/prices.types';
 import { PositionQuery } from 'modules/positions/positions.types';
-import { escapeMd, formatCurrency, shortenString } from 'utils/format';
+import { escapeMd, formatCurrency, liqPriceNumber, shortenString, tokenAmountNumber } from 'utils/format';
 import { AppUrl } from 'utils/func-helper';
-import { formatUnits } from 'viem';
 import { PositionPriceAlertState } from 'integrations/telegram/telegram.types';
 
 function priceBody(position: PositionQuery, price: PriceQuery): string {
-	const bal = parseInt(formatUnits(BigInt(position.collateralBalance), position.collateralDecimals - 2)) / 100;
-	const posPrice = parseFloat(formatUnits(BigInt(position.price), 36 - position.collateralDecimals));
+	const bal = tokenAmountNumber(position.collateralBalance, position.collateralDecimals);
+	const posPrice = liqPriceNumber(position.price, position.collateralDecimals);
 
 	const sym = escapeMd(position.collateralSymbol);
 	const name = escapeMd(position.collateralName);
@@ -20,7 +19,7 @@ function priceBody(position: PositionQuery, price: PriceQuery): string {
 }
 
 export function PositionPriceLowest(position: PositionQuery, price: PriceQuery, last: PositionPriceAlertState): string {
-	const posPrice = parseFloat(formatUnits(BigInt(position.price), 36 - position.collateralDecimals));
+	const posPrice = liqPriceNumber(position.price, position.collateralDecimals);
 	const ratio = Math.round((price.price.chf / posPrice) * 10000) / 100;
 
 	return `🔴 *Position Undercollateralized*
@@ -32,7 +31,7 @@ ${priceBody(position, price)}
 }
 
 export function PositionPriceAlert(position: PositionQuery, price: PriceQuery, last: PositionPriceAlertState): string {
-	const posPrice = parseFloat(formatUnits(BigInt(position.price), 36 - position.collateralDecimals));
+	const posPrice = liqPriceNumber(position.price, position.collateralDecimals);
 	const ratio = Math.round((price.price.chf / posPrice) * 10000) / 100;
 
 	return `🚨 *Price Alert*
@@ -44,7 +43,7 @@ ${priceBody(position, price)}
 }
 
 export function PositionPriceWarning(position: PositionQuery, price: PriceQuery, last: PositionPriceAlertState): string {
-	const posPrice = parseFloat(formatUnits(BigInt(position.price), 36 - position.collateralDecimals));
+	const posPrice = liqPriceNumber(position.price, position.collateralDecimals);
 	const ratio = Math.round((price.price.chf / posPrice) * 10000) / 100;
 
 	return `⚠️ *Price Warning*

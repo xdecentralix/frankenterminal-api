@@ -1,11 +1,11 @@
 import { PositionQuery } from 'modules/positions/positions.types';
-import { escapeMd, formatCurrency, shortenString } from 'utils/format';
+import { escapeMd, formatCurrency, formatLiqPriceUnits, formatTokenUnits, shortenString } from 'utils/format';
 import { ExplorerAddressUrl } from 'utils/func-helper';
 import { formatUnits } from 'viem';
 
 export function PositionDeniedMessage(position: PositionQuery): string {
-	const bal = formatUnits(BigInt(position.collateralBalance), position.collateralDecimals);
-	const price = formatUnits(BigInt(position.price), 36 - position.collateralDecimals);
+	const bal = formatTokenUnits(position.collateralBalance, position.collateralDecimals);
+	const price = formatLiqPriceUnits(position.price, position.collateralDecimals);
 	const denied = position.denyDate > 0 ? new Date(position.denyDate * 1000).toUTCString() : 'Unknown';
 
 	const sym = escapeMd(position.collateralSymbol);
