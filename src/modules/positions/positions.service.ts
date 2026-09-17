@@ -31,6 +31,18 @@ import { PositionV2ABI } from '@frankencoin/zchf';
 import { mainnet } from 'viem/chains';
 import { normalizeAddress } from 'utils/format';
 
+/** Handle reverts immediately so they cannot become unhandledRejections before allSettled. */
+function ignoreRevert(promise: Promise<bigint>): Promise<bigint | undefined> {
+	return promise.then(
+		(value) => value,
+		() => undefined
+	);
+}
+
+function asBigInt(value: bigint | undefined, fallback: string | bigint): bigint {
+	return typeof value === 'bigint' ? value : BigInt(fallback);
+}
+
 @Injectable()
 export class PositionsService {
 	private readonly logger = new Logger(this.constructor.name);
@@ -167,9 +179,9 @@ export class PositionsService {
 
 			const items: PositionQuery[] = data.mintingHubV1PositionV1s.items as PositionQueryV1[];
 			const list: PositionsQueryObjectArray = {};
-			const balanceOfDataPromises: Promise<bigint>[] = [];
-			const mintedDataPromises: Promise<bigint>[] = [];
-			const availableForClonesDataPromises: Promise<bigint>[] = [];
+			const balanceOfDataPromises: Promise<bigint | undefined>[] = [];
+			const mintedDataPromises: Promise<bigint | undefined>[] = [];
+			const availableForClonesDataPromises: Promise<bigint | undefined>[] = [];
 
 			// Ponder same-batch factory child event miss: when a position is opened and then acted on
 			// (e.g. denied) within the same ethGetLogsBlockRange window, Ponder silently drops the child
@@ -187,43 +199,49 @@ export class PositionsService {
 				// This ensures that collateral transfers can be made without using the smart contract or application directly,
 				// and the API will be aware of the updated state.
 				balanceOfDataPromises.push(
-					VIEM_CONFIG[mainnet.id].readContract({
-						address: p.collateral,
-						abi: erc20Abi,
-						functionName: 'balanceOf',
-						args: [p.position],
-					})
+					ignoreRevert(
+						VIEM_CONFIG[mainnet.id].readContract({
+							address: p.collateral,
+							abi: erc20Abi,
+							functionName: 'balanceOf',
+							args: [p.position],
+						})
+					)
 				);
 
 				// fetch minted - See issue #11
 				// https://github.com/Frankencoin-ZCHF/frankencoin-api/issues/11
 				mintedDataPromises.push(
-					VIEM_CONFIG[mainnet.id].readContract({
-						address: p.position,
-						abi: PositionV1ABI,
-						functionName: 'minted',
-					})
+					ignoreRevert(
+						VIEM_CONFIG[mainnet.id].readContract({
+							address: p.position,
+							abi: PositionV1ABI,
+							functionName: 'minted',
+						})
+					)
 				);
 
 				availableForClonesDataPromises.push(
-					VIEM_CONFIG[mainnet.id].readContract({
-						address: p.position,
-						abi: PositionV1ABI,
-						functionName: 'limitForClones',
-					})
+					ignoreRevert(
+						VIEM_CONFIG[mainnet.id].readContract({
+							address: p.position,
+							abi: PositionV1ABI,
+							functionName: 'limitForClones',
+						})
+					)
 				);
 			}
 
 			// await for contract calls
-			const balanceOfData = await Promise.allSettled(balanceOfDataPromises);
-			const mintedData = await Promise.allSettled(mintedDataPromises);
-			const availableForClonesData = await Promise.allSettled(availableForClonesDataPromises);
+			const balanceOfData = await Promise.all(balanceOfDataPromises);
+			const mintedData = await Promise.all(mintedDataPromises);
+			const availableForClonesData = await Promise.all(availableForClonesDataPromises);
 
 			for (let idx = 0; idx < openItems.length; idx++) {
 				const p = openItems[idx];
-				const b = (balanceOfData[idx] as PromiseFulfilledResult<bigint>).value;
-				const m = (mintedData[idx] as PromiseFulfilledResult<bigint>).value;
-				const a = (availableForClonesData[idx] as PromiseFulfilledResult<bigint>).value;
+				const b = asBigInt(balanceOfData[idx], p.collateralBalance);
+				const m = asBigInt(mintedData[idx], p.minted);
+				const a = asBigInt(availableForClonesData[idx], p.availableForClones);
 
 				const entry: PositionQueryV1 = {
 					version: 1,
@@ -322,7 +340,7 @@ export class PositionsService {
 
 			return list;
 		} catch (error) {
-			this.logger.error('Failed to update Positions V1 from indexer', error);
+			this.logger.error(`Failed to update Positions V1 from indexer: ${error instanceof Error ? error.message : String(error)}`);
 			// Data remains in memory from previous successful fetch
 		}
 	}
@@ -394,10 +412,10 @@ export class PositionsService {
 
 			const items: PositionQuery[] = data.mintingHubV2PositionV2s.items as PositionQueryV2[];
 			const list: PositionsQueryObjectArray = {};
-			const balanceOfDataPromises: Promise<bigint>[] = [];
-			const mintedDataPromises: Promise<bigint>[] = [];
-			const availableForClonesDataPromises: Promise<bigint>[] = [];
-			const availableForMintingDataPromises: Promise<bigint>[] = [];
+			const balanceOfDataPromises: Promise<bigint | undefined>[] = [];
+			const mintedDataPromises: Promise<bigint | undefined>[] = [];
+			const availableForClonesDataPromises: Promise<bigint | undefined>[] = [];
+			const availableForMintingDataPromises: Promise<bigint | undefined>[] = [];
 
 			const leadrate: number = await VIEM_CONFIG[mainnet.id].readContract({
 				address: ADDRESS[mainnet.id].savingsV2,
@@ -413,54 +431,62 @@ export class PositionsService {
 				// This ensures that collateral transfers can be made without using the smart contract or application directly,
 				// and the API will be aware of the updated state.
 				balanceOfDataPromises.push(
-					VIEM_CONFIG[mainnet.id].readContract({
-						address: p.collateral,
-						abi: erc20Abi,
-						functionName: 'balanceOf',
-						args: [p.position],
-					})
+					ignoreRevert(
+						VIEM_CONFIG[mainnet.id].readContract({
+							address: p.collateral,
+							abi: erc20Abi,
+							functionName: 'balanceOf',
+							args: [p.position],
+						})
+					)
 				);
 
 				// fetch minted - See issue #11
 				// https://github.com/Frankencoin-ZCHF/frankencoin-api/issues/11
 				mintedDataPromises.push(
-					VIEM_CONFIG[mainnet.id].readContract({
-						address: p.position,
-						abi: PositionV2ABI,
-						functionName: 'minted',
-					})
+					ignoreRevert(
+						VIEM_CONFIG[mainnet.id].readContract({
+							address: p.position,
+							abi: PositionV2ABI,
+							functionName: 'minted',
+						})
+					)
 				);
 
 				// make highly available, instead of relying on indexer state
 				// https://github.com/Frankencoin-ZCHF/frankencoin-dapp/issues/144
 				availableForClonesDataPromises.push(
-					VIEM_CONFIG[mainnet.id].readContract({
-						address: p.original,
-						abi: PositionV2ABI,
-						functionName: 'availableForClones',
-					})
+					ignoreRevert(
+						VIEM_CONFIG[mainnet.id].readContract({
+							address: p.original,
+							abi: PositionV2ABI,
+							functionName: 'availableForClones',
+						})
+					)
 				);
 				availableForMintingDataPromises.push(
-					VIEM_CONFIG[mainnet.id].readContract({
-						address: p.position,
-						abi: PositionV2ABI,
-						functionName: 'availableForMinting',
-					})
+					ignoreRevert(
+						VIEM_CONFIG[mainnet.id].readContract({
+							address: p.position,
+							abi: PositionV2ABI,
+							functionName: 'availableForMinting',
+						})
+					)
 				);
 			}
 
 			// await for contract calls
-			const balanceOfData = await Promise.allSettled(balanceOfDataPromises);
-			const mintedData = await Promise.allSettled(mintedDataPromises);
-			const clonesDate = await Promise.allSettled(availableForClonesDataPromises);
-			const mintingDate = await Promise.allSettled(availableForMintingDataPromises);
+			const balanceOfData = await Promise.all(balanceOfDataPromises);
+			const mintedData = await Promise.all(mintedDataPromises);
+			const clonesDate = await Promise.all(availableForClonesDataPromises);
+			const mintingDate = await Promise.all(availableForMintingDataPromises);
 
 			for (let idx = 0; idx < openItems.length; idx++) {
 				const p = openItems[idx];
-				const b = (balanceOfData[idx] as PromiseFulfilledResult<bigint>).value;
-				const m = (mintedData[idx] as PromiseFulfilledResult<bigint>).value;
-				const ac = (clonesDate[idx] as PromiseFulfilledResult<bigint>).value;
-				const am = (mintingDate[idx] as PromiseFulfilledResult<bigint>).value;
+				const b = asBigInt(balanceOfData[idx], p.collateralBalance);
+				const m = asBigInt(mintedData[idx], p.minted);
+				const ac = asBigInt(clonesDate[idx], p.availableForClones);
+				const am = asBigInt(mintingDate[idx], p.availableForMinting);
 
 				const limitForPosition = (b * BigInt(p.price)) / BigInt(10 ** p.zchfDecimals);
 				const availableForPosition = limitForPosition - m;
@@ -573,7 +599,7 @@ export class PositionsService {
 
 			return list;
 		} catch (error) {
-			this.logger.error('Failed to update Positions V2 from indexer', error);
+			this.logger.error(`Failed to update Positions V2 from indexer: ${error instanceof Error ? error.message : String(error)}`);
 			// Data remains in memory from previous successful fetch
 		}
 	}

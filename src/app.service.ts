@@ -128,10 +128,15 @@ export class ApiService {
 		this.indexingTimeoutCount += 1;
 		if (blockHeight > this.fetchedBlockheight && !this.indexing) {
 			this.indexing = true;
-			await this.updateWorkflow();
-			this.indexingTimeoutCount = 0;
-			this.fetchedBlockheight = blockHeight;
-			this.indexing = false;
+			try {
+				await this.updateWorkflow();
+				this.indexingTimeoutCount = 0;
+				this.fetchedBlockheight = blockHeight;
+			} catch (error) {
+				this.logger.error(`Update workflow failed: ${error instanceof Error ? error.message : String(error)}`);
+			} finally {
+				this.indexing = false;
+			}
 		}
 		if (this.indexingTimeoutCount >= INDEXING_TIMEOUT_COUNT && this.indexing) {
 			this.indexingTimeoutCount = 0;
