@@ -42,10 +42,6 @@ function ignoreRevert(promise: Promise<bigint>): Promise<bigint | undefined> {
 	);
 }
 
-function asBigInt(value: bigint | undefined, fallback: string | bigint): bigint {
-	return typeof value === 'bigint' ? value : BigInt(fallback);
-}
-
 @Injectable()
 export class PositionsService {
 	private readonly logger = new Logger(this.constructor.name);
@@ -64,6 +60,23 @@ export class PositionsService {
 	private mintingUpdatesOwnerCache = new TtlCache<ApiMintingUpdateListing>(OWNER_CACHE_TTL_MS);
 
 	constructor(private readonly dataSource: DataSourceManagerService) {}
+
+	// @dev: unwraps one Promise.allSettled() result. A rejected on-chain read (e.g. a collateral token
+	// whose balanceOf() reverts, or availableForClones() reverting because of it) is logged with the
+	// position it belongs to and yields undefined, so callers fall back to the indexer value.
+	private settledValue(
+		result: PromiseSettledResult<bigint> | undefined,
+		p: { position: Address; collateral: Address },
+		call: string
+	): bigint | undefined {
+		if (result?.status === 'fulfilled') return result.value;
+		const reason = result?.reason;
+		const message = reason?.shortMessage ?? reason?.message ?? String(reason);
+		this.logger.warn(
+			`On-chain read ${call} failed for position ${p.position} (collateral ${p.collateral}), falling back to indexer state: ${message}`
+		);
+		return undefined;
+	}
 
 	// @dev: ponder caps a single page at 1000 items, so any connection that can grow past that has
 	// to be walked with cursor pagination — see reporting.service.ts for the same fix. `query` must
@@ -276,16 +289,22 @@ export class PositionsService {
 				);
 			}
 
-			// await for contract calls
-			const balanceOfData = await Promise.all(balanceOfDataPromises);
-			const mintedData = await Promise.all(mintedDataPromises);
-			const availableForClonesData = await Promise.all(availableForClonesDataPromises);
+			// await for contract calls. All allSettled() calls are created in the same tick so every
+			// promise has a rejection handler attached before any network round trip completes. Awaiting
+			// them one array at a time would leave the later arrays unobserved while the earlier ones are
+			// in flight; a revert there (e.g. a collateral token whose balanceOf() reverts) becomes an
+			// unhandled rejection and Node terminates the process.
+			const [balanceOfData, mintedData, availableForClonesData] = await Promise.all([
+				Promise.allSettled(balanceOfDataPromises),
+				Promise.allSettled(mintedDataPromises),
+				Promise.allSettled(availableForClonesDataPromises),
+			]);
 
 			for (let idx = 0; idx < openItems.length; idx++) {
 				const p = openItems[idx];
-				const b = asBigInt(balanceOfData[idx], p.collateralBalance);
-				const m = asBigInt(mintedData[idx], p.minted);
-				const a = asBigInt(availableForClonesData[idx], p.availableForClones);
+				const b = this.settledValue(balanceOfData[idx], p, 'balanceOf');
+				const m = this.settledValue(mintedData[idx], p, 'minted');
+				const a = this.settledValue(availableForClonesData[idx], p, 'limitForClones');
 
 				const entry: PositionQueryV1 = {
 					version: 1,
@@ -519,21 +538,28 @@ export class PositionsService {
 				);
 			}
 
-			// await for contract calls
-			const balanceOfData = await Promise.all(balanceOfDataPromises);
-			const mintedData = await Promise.all(mintedDataPromises);
-			const clonesDate = await Promise.all(availableForClonesDataPromises);
-			const mintingDate = await Promise.all(availableForMintingDataPromises);
+			// await for contract calls. See the V1 comment above: attach all handlers in the same tick so a
+			// reverting call can never surface as an unhandled rejection.
+			const [balanceOfData, mintedData, clonesDate, mintingDate] = await Promise.all([
+				Promise.allSettled(balanceOfDataPromises),
+				Promise.allSettled(mintedDataPromises),
+				Promise.allSettled(availableForClonesDataPromises),
+				Promise.allSettled(availableForMintingDataPromises),
+			]);
 
 			for (let idx = 0; idx < openItems.length; idx++) {
 				const p = openItems[idx];
-				const b = asBigInt(balanceOfData[idx], p.collateralBalance);
-				const m = asBigInt(mintedData[idx], p.minted);
-				const ac = asBigInt(clonesDate[idx], p.availableForClones);
-				const am = asBigInt(mintingDate[idx], p.availableForMinting);
+				const b = this.settledValue(balanceOfData[idx], p, 'balanceOf');
+				const m = this.settledValue(mintedData[idx], p, 'minted');
+				const ac = this.settledValue(clonesDate[idx], p, 'availableForClones');
+				const am = this.settledValue(mintingDate[idx], p, 'availableForMinting');
 
-				const limitForPosition = (b * BigInt(p.price)) / BigInt(10 ** p.zchfDecimals);
-				const availableForPosition = limitForPosition - m;
+				// Fall back to the indexer state when the on-chain read failed, so one broken
+				// collateral token cannot abort the whole V2 update.
+				const balance = typeof b === 'bigint' ? b : BigInt(p.collateralBalance);
+				const minted = typeof m === 'bigint' ? m : BigInt(p.minted);
+				const limitForPosition = (balance * BigInt(p.price)) / BigInt(10 ** p.zchfDecimals);
+				const availableForPosition = limitForPosition - minted;
 
 				const entry: PositionQueryV2 = {
 					version: 2,
